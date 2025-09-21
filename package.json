@@ -1,0 +1,19 @@
+{
+  "name": "markdown-to-bgg",
+  "version": "1.0.0",
+  "description": "Converts markdown to bgg post text and back again",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/miketoth/markdown-to-bgg.git"
+  },
+  "author": "miketoth",
+  "license": "GPL-3.0-or-later",
+  "bugs": {
+    "url": "https://github.com/miketoth/markdown-to-bgg/issues"
+  },
+  "homepage": "https://github.com/miketoth/markdown-to-bgg#readme"
+}
