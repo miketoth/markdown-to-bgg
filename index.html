@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>BGG ⇄ Markdown Converter</title>
+  <style>
+    :root { --bg:#fff; --fg:#111; --muted:#666; --line:#e5e7eb; --accent:#2563eb; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg);
+      font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    header {
+      padding: 14px 16px; border-bottom: 1px solid var(--line);
+      display:flex; align-items:center; justify-content:space-between; gap: 12px; flex-wrap: wrap;
+    }
+    h1 { font-size: 16px; margin: 0; }
+    .muted { color: var(--muted); }
+    .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .pill { border:1px solid var(--line); border-radius:999px; padding:6px 10px; }
+    label { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
+    main {
+      display:grid; grid-template-columns: 1fr 1fr; min-height: calc(100% - 56px);
+    }
+    .col { display:flex; flex-direction:column; min-height: 0; }
+    .col header { border-bottom: 1px solid var(--line); padding: 10px 12px; }
+    .col h2 { font-size: 13px; font-weight: 600; margin: 0; }
+    .pad { padding: 10px; }
+    textarea, pre {
+      width: 100%; height: calc(100vh - 140px);
+      box-sizing: border-box; padding: 12px; border: none; outline: none; resize: none;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: #fafafa; border-right: 1px solid var(--line);
+    }
+    pre {
+      margin: 0; border-left: 1px solid var(--line); white-space: pre-wrap; word-break: break-word;
+      background: #fcfcfc;
+    }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    button {
+      padding: 8px 10px; border: 1px solid var(--line); background: #fff; border-radius: 8px; cursor: pointer;
+    }
+    button:hover { background:#f7f7f7; }
+    .badge { padding: 3px 8px; border-radius: 999px; border:1px solid var(--line); font-size: 12px; }
+    .badge.good { border-color: var(--accent); color: var(--accent); }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      textarea, pre { height: 40vh; border-right: none; border-left: none; }
+    }
+  </style>
+  <link rel="icon" href="data:,">
+</head>
+<body>
+  <header>
+    <h1>BGG ⇄ Markdown Converter <span class="muted">/ paste on the left, see result on the right</span></h1>
+    <div class="controls">
+      <div class="pill">
+        <span class="muted" style="margin-right:6px;">Detection:</span>
+        <span id="detected" class="badge">—</span>
+      </div>
+      <div class="pill">
+        <label><input type="radio" name="mode" value="auto" checked> Auto</label>
+        <label><input type="radio" name="mode" value="bgg"> Force BGG → MD</label>
+        <label><input type="radio" name="mode" value="md"> Force MD → BGG</label>
+      </div>
+      <button id="swapBtn" title="Swap input & output columns">Swap</button>
+      <button id="copyBtn" title="Copy output to clipboard">Copy Output</button>
+      <button id="clearBtn" title="Clear both">Clear</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="col">
+      <header><h2>Input</h2></header>
+      <div class="pad">
+        <textarea id="input" placeholder="Paste Markdown or BGG markup here…"></textarea>
+      </div>
+    </section>
+    <section class="col">
+      <header><h2>Output</h2></header>
+      <div class="pad">
+        <pre id="output"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    // ===== Converter (ESM, self-contained here) =====
+    function protectSegments(input, pairs) {
+      let text = input;
+      const store = Object.create(null);
+      let counter = 0;
+      for (const { name, start, end } of pairs) {
+        let m; const re = new RegExp(start.source, start.flags.replace('g',''));
+        while ((m = re.exec(text))) {
+          const startIdx = m.index; const afterStart = startIdx + m[0].length;
+          let endIdx = -1;
+          if (!end) endIdx = afterStart; else {
+            const endRe = new RegExp(end.source, end.flags.replace('g',''));
+            endRe.lastIndex = afterStart; const endMatch = endRe.exec(text);
+            if (!endMatch) break; endIdx = endMatch.index + endMatch[0].length;
+          }
+          const chunk = text.slice(startIdx, endIdx);
+          const token = `__PROTECTED_${name}_${counter++}__`;
+          store[token] = chunk;
+          text = text.slice(0, startIdx) + token + text.slice(endIdx);
+          re.lastIndex = startIdx + token.length;
+        }
+      }
+      return { text, restore: (s) => s.replace(/__PROTECTED_([A-Z0-9_]+?)_(\d+)__/g, (t) => store[t] || t) };
+    }
+
+    const sizeToHashes = [
+      { threshold: 24, hashes: '#' }, { threshold: 18, hashes: '##' }, { threshold: 16, hashes: '###' },
+      { threshold: 14, hashes: '####' }, { threshold: 12, hashes: '#####' }, { threshold: 10, hashes: '######' },
+    ];
+    function sizeToHeading(sizeStr) {
+      const n = parseInt(sizeStr, 10);
+      if (!isFinite(n)) return null;
+      for (const m of sizeToHashes) if (n >= m.threshold) return m.hashes;
+      return null;
+    }
+    function headingToSize(hashes) {
+      switch ((hashes||'').length) {
+        case 1: return 24; case 2: return 18; case 3: return 16; case 4: return 14; case 5: return 12; default: return 10;
+      }
+    }
+    function quoteBodyToMarkdown(body) {
+      const lines = String(body).replace(/^\n+|\n+$/g, '').split(/\r?\n/);
+      return lines.map(l => '> ' + l).join('\n') + '\n\n';
+    }
+    function blockquoteMarkdownToBgg(md) {
+      const lines = md.split(/\r?\n/); const out = []; let buf = [];
+      function flush(){ if (buf.length){ const inner = buf.map(l=>l.replace(/^>\s?/, '')).join('\n'); out.push('[quote]\n'+inner+'\n[/quote]'); buf = []; } }
+      for (const l of lines) { if (/^>\s?/.test(l)) buf.push(l); else { flush(); out.push(l); } }
+      flush(); return out.join('\n');
+    }
+
+    function bggToMarkdown(input) {
+      if (!input) return input;
+      const pr = protectSegments(input, [{ name: 'CODE_BGG', start: /\[code\]/i, end: /\[\/code\]/i }]);
+      let out = pr.text;
+
+      out = out.replace(/\[code\]([\s\S]*?)\[\/code\]/gi, (_m, body) => '\n```\n' + String(body).replace(/^\n+|\n+$/g,'') + '\n```\n');
+      out = out.replace(/\[tt\]([\s\S]*?)\[\/tt\]/gi, (_m, body) => '`' + body + '`');
+      out = out.replace(/\[b\]([\s\S]*?)\[\/b\]/gi, '**$1**');
+      out = out.replace(/\[i\]([\s\S]*?)\[\/i\]/gi, '*$1*');
+      out = out.replace(/\[u\]([\s\S]*?)\[\/u\]/gi, '<u>$1<\/u>');
+      out = out.replace(/\[s\]([\s\S]*?)\[\/s\]/gi, '~~$1~~');
+      out = out.replace(/\[-\]([\s\S]*?)\[\/-\]/gi, '~~$1~~');
+      out = out.replace(/\[url=([^\]]+)\]([\s\S]*?)\[\/url\]/gi, (_m, href, text) => `[${text}](${href})`);
+      out = out.replace(/\[img\]([\s\S]*?)\[\/img\]/gi, (_m, src) => `![](${src})`);
+      out = out.replace(/\[thing=(\d+)\]([\s\S]*?)\[\/thing\]/gi, (_m, id, text) => `[${text}](https://boardgamegeek.com/thing/${id})`);
+      out = out.replace(/\[user=\d+\]([\s\S]*?)\[\/user\]/gi, (_m, name) => `[@${name}](https://boardgamegeek.com/user/${name})`);
+      out = out.replace(/\[quote\]([\s\S]*?)\[\/quote\]/gi, (_m, body) => quoteBodyToMarkdown(body));
+      out = out.replace(/\[list\]([\s\S]*?)\[\/list\]/gi, (_m, body) => {
+        const items = String(body).replace(/\r?\n/g,'\n').split(/\n?\[\*\]\s*/i).map(s=>s.trim()).filter(Boolean);
+        if (!items.length) return '';
+        return '\n' + items.map(it => '- ' + it.replace(/\[\/*\]/g,'').trim()).join('\n') + '\n';
+      });
+      out = out.replace(/\[olist\]([\s\S]*?)\[\/olist\]/gi, (_m, body) => {
+        const items = String(body).replace(/\r?\n/g,'\n').split(/\n?\[\*\]\s*/i).map(s=>s.trim()).filter(Boolean);
+        if (!items.length) return '';
+        return '\n' + items.map((it,i) => `${i+1}. ` + it.replace(/\[\/*\]/g,'').trim()).join('\n') + '\n';
+      });
+      out = out.replace(/\[size=(\d{1,3})\]([\s\S]*?)\[\/size\]/gi, (_m, sz, text) => {
+        const hashes = sizeToHeading(sz); const inner = String(text).trim();
+        if (hashes && /^(?:.|\n){0,120}$/.test(inner) && !/\n/.test(inner)) return '\n'+hashes+' '+inner+'\n\n';
+        return inner;
+      });
+      out = out.replace(/\[br\s*\/?\]/gi, '  \n');
+
+      return pr.restore(out);
+    }
+
+    function markdownToBgg(input) {
+      if (!input) return input;
+      const pr = protectSegments(input, [{ name: 'CODE_FENCE', start: /```[\s\S]*?\n/, end: /\n```/ }]);
+      let out = pr.text;
+
+      out = out.replace(/```([a-z0-9_-]+)?\n([\s\S]*?)\n```/gi, (_m, _lang, body) => `[code]\n${String(body).replace(/^\n+|\n+$/g,'')}\n[/code]`);
+      out = out.replace(/`([^`\n]+)`/g, (_m, body) => `[tt]${body}[/tt]`);
+      out = blockquoteMarkdownToBgg(out);
+      out = out.replace(/^(#{1,6})\s+(.+)$/gm, (_m, hashes, text) => `[size=${headingToSize(hashes)}]${text.trim()}[/size]`);
+      out = out.replace(/\*\*([\s\S]*?)\*\*/g, "[b]$1[/b]");
+      out = out.replace(/(?<!\*)\*([^\s*][\s\S]*?)\*(?!\*)/g, "[i]$1[/i]");
+      out = out.replace(/(?<!_)_([^\s_][\s\S]*?)_(?!_)/g, "[i]$1[/i]");
+      out = out.replace(/~~([\s\S]*?)~~/g, "[s]$1[/s]");
+      out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_m, text, href) => {
+        const thing = /boardgamegeek\.com\/(?:thing|boardgame)\/(\d+)/i.exec(href);
+        if (thing) return `[thing=${thing[1]}]${text}[/thing]`;
+        const user = /boardgamegeek\.com\/user\/([A-Za-z0-9_-]+)/i.exec(href);
+        if (user) return `[user=0]${user[1]}[/user]`;
+        return `[url=${href}]${text}[/url]`;
+      });
+      out = out.replace(/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g, (_m, _alt, src) => `[img]${src}[/img]`);
+      out = out.replace(/(?:^|\n)([ \t]*)([-*+])\s+(.+)(?:\n\1\2\s+.+)*/g, (block) => {
+        const lines = block.trim().split(/\r?\n/); const items = lines.map(l=>l.replace(/^[ \t]*[-*+]\s+/, '').trim());
+        return '\n[list]\n' + items.map(it=>'[*] '+it).join('\n') + '\n[/list]';
+      });
+      out = out.replace(/(?:^|\n)([ \t]*)\d+\.\s+(.+)(?:\n\1\d+\.\s+.+)*/g, (block) => {
+        const lines = block.trim().split(/\r?\n/); const items = lines.map(l=>l.replace(/^[ \t]*\d+\.\s+/, '').trim());
+        return '\n[olist]\n' + items.map(it=>'[*] '+it).join('\n') + '\n[/olist]';
+      });
+      out = out.replace(/  \n/g, '[br]\n');
+      out = out.replace(/<u>([\s\S]*?)<\/u>/gi, '[u]$1[/u]');
+
+      return pr.restore(out);
+    }
+
+    // ===== UI wiring =====
+    const $in = document.getElementById('input');
+    const $out = document.getElementById('output');
+    const $detected = document.getElementById('detected');
+    const $copy = document.getElementById('copyBtn');
+    const $clear = document.getElementById('clearBtn');
+    const $swap = document.getElementById('swapBtn');
+    const radios = [...document.querySelectorAll('input[name="mode"]')];
+
+    function detectMode(text) {
+      // Light heuristics
+      const looksBGG = /\[(?:b|i|u|s|code|url|img|list|olist|quote|thing|user|size|tt)\b/i.test(text);
+      const looksMD  = /(^|\s)([*_]{1,2}.+?[*_]{1,2}|~~.+?~~|\[.+?\]\(.+?\)|^> |\n> )/ms.test(text) || /^#{1,6}\s/m.test(text);
+      if (looksBGG && !looksMD) return 'bgg';
+      if (looksMD && !looksBGG) return 'md';
+      if (looksBGG && looksMD)  return 'mixed'; // choose based on stronger signal below
+      return 'unknown';
+    }
+
+    function strongest(text) {
+      const bggHits = (text.match(/\[(?:b|i|u|s|code|url|img|list|olist|quote|thing|user|size|tt)\b/gi) || []).length;
+      const mdHits  = (text.match(/(\*\*|__|~~|\[[^\]]+\]\([^)]+\)|^> |\n> |^#{1,6}\s)/gm) || []).length;
+      return bggHits >= mdHits ? 'bgg' : 'md';
+    }
+
+    function currentForcedMode() {
+      return (radios.find(r => r.checked) || {}).value || 'auto';
+    }
+
+    function render() {
+      const text = $in.value;
+      const detection = detectMode(text);
+      let mode = currentForcedMode();
+      if (mode === 'auto') {
+        if (detection === 'mixed') mode = strongest(text);
+        else if (detection === 'unknown') mode = 'md'; // default assume markdown
+        else mode = detection;
+      }
+
+      $detected.textContent = mode.toUpperCase();
+
+      try {
+        const out = mode === 'bgg' ? bggToMarkdown(text) : markdownToBgg(text);
+        $out.textContent = out || '';
+      } catch (e) {
+        $out.textContent = `Conversion error: ${e && e.message ? e.message : e}`;
+      }
+    }
+
+    let t;
+    $in.addEventListener('input', () => { clearTimeout(t); t = setTimeout(render, 60); });
+    radios.forEach(r => r.addEventListener('change', render));
+    $copy.addEventListener('click', async () => {
+      const txt = $out.textContent || '';
+      try { await navigator.clipboard.writeText(txt); $copy.textContent = 'Copied!'; setTimeout(()=> $copy.textContent='Copy Output', 900); }
+      catch { /* ignore */ }
+    });
+    $clear.addEventListener('click', () => { $in.value = ''; $out.textContent = ''; $detected.textContent = '—'; $in.focus(); });
+    $swap.addEventListener('click', () => {
+      const input = $in.value;
+      const output = $out.textContent;
+      $in.value = output || '';
+      $out.textContent = input || '';
+      render();
+    });
+
+    $in.value = `# Title
+
+**Bold** *italic* ~~strike~~ and [link](https://boardgamegeek.com/thing/13).
+
+- A
+- B
+
+> Quoted line`;
+    render();
+  </script>
+</body>
+</html>
