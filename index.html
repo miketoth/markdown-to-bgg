@@ -86,7 +86,6 @@
   </main>
 
   <script type="module">
-    // ===== Converter (ESM, self-contained here) =====
     function protectSegments(input, pairs) {
       let text = input;
       const store = Object.create(null);
@@ -209,7 +208,6 @@
       return pr.restore(out);
     }
 
-    // ===== UI wiring =====
     const $in = document.getElementById('input');
     const $out = document.getElementById('output');
     const $detected = document.getElementById('detected');
